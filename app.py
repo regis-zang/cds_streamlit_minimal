@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 import os
@@ -17,7 +16,7 @@ st.set_page_config(page_title="CDs - Mapa & Raios", layout="wide")
 DATA_DIR = os.path.join(os.path.dirname(__file__), "DataBase")
 PARQUET_FILE = os.path.join(DATA_DIR, "points_enriched_final.parquet")
 
-# Paleta de cores (cicla caso existam mais clusters)
+# Paleta de cores (cicla se tiver mais clusters)
 BASE_PALETTE = [
     (239, 83, 80),   # vermelho
     (76, 175, 80),   # verde
@@ -63,7 +62,7 @@ def load_points(path: str) -> pd.DataFrame:
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
-    """Distância Haversine em KM."""
+    """Distância Haversine em KM (vetorizado)."""
     R = 6371.0
     p = np.pi / 180.0
     dlat = (lat2 - lat1) * p
@@ -74,54 +73,47 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 def _ensure_centroid_columns_after_merge(base: pd.DataFrame) -> pd.DataFrame:
     """
-    Garante que, após o merge, existam as colunas:
-      - centroid_lat
-      - centroid_lon
-    e que as colunas de ponto sejam:
-      - latitude
-      - longitude
-
-    Faz mapeamentos robustos caso o Pandas tenha criado sufixos
-    como latitude_x / latitude_y, latitude_centroid etc.
+    Após o merge, garante que existam:
+      - latitude, longitude (ponto)
+      - centroid_lat, centroid_lon (centróide)
+    Normaliza sufixos como _x/_y, _centroid, etc.
     """
     b = base.copy()
 
-    # 1) Normaliza latitude/longitude do ponto (lado esquerdo)
-    #    Preferências: 'latitude'/'longitude' -> 'latitude_x'/'longitude_x'
+    # ponto (lado esquerdo)
     if "latitude" not in b.columns and "latitude_x" in b.columns:
         b = b.rename(columns={"latitude_x": "latitude"})
     if "longitude" not in b.columns and "longitude_x" in b.columns:
         b = b.rename(columns={"longitude_x": "longitude"})
 
-    # 2) Cria centroid_lat/centroid_lon a partir das alternativas existentes
+    # centróide
     if "centroid_lat" not in b.columns:
-        if "latitude_y" in b.columns:  # caso o rename não tenha acontecido
+        if "latitude_y" in b.columns:
             b = b.rename(columns={"latitude_y": "centroid_lat"})
         elif "latitude_centroid" in b.columns:
             b = b.rename(columns={"latitude_centroid": "centroid_lat"})
+
     if "centroid_lon" not in b.columns:
         if "longitude_y" in b.columns:
             b = b.rename(columns={"longitude_y": "centroid_lon"})
         elif "longitude_centroid" in b.columns:
             b = b.rename(columns={"longitude_centroid": "centroid_lon"})
 
-    # 3) Se ainda assim não existirem, tenta detectar colunas candidatas por sufixo
-    #    (último fallback)
-    if "centroid_lat" not in b.columns or "centroid_lon" not in b.columns:
-        # Procura por qualquer coluna que tenha "lat" e não seja "latitude"
+    # fallback final: primeira coluna que contenha 'lat' (exceto 'latitude')
+    if "centroid_lat" not in b.columns:
         lat_cands = [c for c in b.columns if "lat" in c.lower() and c != "latitude"]
-        lon_cands = [c for c in b.columns if "lon" in c.lower() and c != "longitude"]
-        if lat_cands and "centroid_lat" not in b.columns:
+        if lat_cands:
             b = b.rename(columns={lat_cands[0]: "centroid_lat"})
-        if lon_cands and "centroid_lon" not in b.columns:
+    if "centroid_lon" not in b.columns:
+        lon_cands = [c for c in b.columns if "lon" in c.lower() and c != "longitude"]
+        if lon_cands:
             b = b.rename(columns={lon_cands[0]: "centroid_lon"})
 
-    # 4) Confere se ficou tudo certo
     needed = {"latitude", "longitude", "centroid_lat", "centroid_lon"}
     missing = needed - set(b.columns)
     if missing:
         raise KeyError(
-            f"Após o merge, ainda faltam colunas: {missing}. "
+            f"Ainda faltam colunas após o merge: {missing}. "
             f"Colunas disponíveis: {list(b.columns)}"
         )
 
@@ -129,27 +121,22 @@ def _ensure_centroid_columns_after_merge(base: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Calcula centróides, raio p90 e contagem por cluster (robusto a sufixos)."""
-    # Centróide (média)
+    """Centróides, raio p90 e contagem por cluster — robusto a sufixos."""
     cent = (
         df.groupby("cluster")[["latitude", "longitude"]]
         .mean()
         .reset_index()
+        .rename(columns={"latitude": "centroid_lat", "longitude": "centroid_lon"})
     )
-    # Garante nomes-friendly no centróide
-    cent = cent.rename(columns={"latitude": "centroid_lat", "longitude": "centroid_lon"})
 
-    # Merge com robustez a sufixos
     base = df.merge(cent, on="cluster", how="left", suffixes=("", "_centroid"))
     base = _ensure_centroid_columns_after_merge(base)
 
-    # Distâncias ao centróide
     base["dist_km"] = haversine_km(
         base["latitude"], base["longitude"],
         base["centroid_lat"], base["centroid_lon"],
     )
 
-    # p90 e contagem
     r90 = (
         base.groupby("cluster")["dist_km"].quantile(0.90)
         .reset_index()
@@ -184,15 +171,12 @@ def make_deck(
 ) -> pdk.Deck:
     layers = []
 
-    # Basemap (CARTO Light)
+    # Basemap claro (Carto)
     layers.append(
         pdk.Layer(
             "TileLayer",
             data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-            min_zoom=0,
-            max_zoom=19,
-            tile_size=256,
-            opacity=1.0,
+            min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
         )
     )
 
@@ -210,7 +194,7 @@ def make_deck(
         )
     )
 
-    # Círculos p90
+    # Círculos (p90)
     if show_r90:
         summary = compute_cluster_summary(df_points)
         circ = summary.copy()
@@ -263,7 +247,7 @@ def make_deck(
         layers=layers,
         tooltip=tooltip,
         map_provider=None,
-        map_style=None,  # evita fundo preto
+        map_style=None,
     )
 
 
@@ -310,6 +294,7 @@ c2.metric("Pontos no mapa (amostra)", f"{len(df):,}".replace(",", "."))
 c3.metric("Lat range", f"{df['latitude'].min():.3f} ~ {df['latitude'].max():.3f}")
 c4.metric("Lon range", f"{df['longitude'].min():.3f} ~ {df['longitude'].max():.3f}")
 
+# Abas
 tab_map, tab_charts = st.tabs(["🗺️  Mapa", "📊  CDs & Raios"])
 
 # ====== Mapa
