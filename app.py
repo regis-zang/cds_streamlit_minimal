@@ -146,9 +146,15 @@ else:
     st.sidebar.info("Coluna 'cluster' não encontrada — mostrando todos os pontos.")
     sel_clusters = []
 
-max_points  = st.sidebar.slider("Máx. de pontos no mapa", 500, 30000, 8000, step=500)
-point_size  = st.sidebar.slider("Tamanho do marcador (px)", 2, 12, 6)
-base_choice = st.sidebar.selectbox("Fundo do mapa", ["Carto Light", "OSM Standard"])
+# ---- Parâmetros fixos (sem mostrar controles) ----
+MAX_POINTS_DEFAULT = 8000
+POINT_SIZE_DEFAULT = 6
+BASE_MAP_DEFAULT   = "Carto Light"   # ou "OSM Standard" se preferir
+
+max_points  = MAX_POINTS_DEFAULT
+point_size  = POINT_SIZE_DEFAULT
+base_choice = BASE_MAP_DEFAULT
+
 show_legend = st.sidebar.checkbox("Mostrar legenda de cores", value=True)
 show_areas  = st.sidebar.checkbox("Mostrar círculos p90 por CD", value=True)
 show_labels = st.sidebar.checkbox("Mostrar contagem no centróide", value=True)
