@@ -223,14 +223,13 @@ with tab_map:
         "style": {"backgroundColor": "rgba(0,0,0,0.7)", "color": "white"}
     }
 
-    deck = pdk.Deck(
-        id=f"deck_{nonce}",
-        initial_view_state=view,
-        layers=layers,
-        map_style=None,                 # evita fundo preto (usamos TileLayer)
-        parameters={"clearColor": [0.97, 0.97, 0.97, 1.0]},
-        tooltip=tooltip,
-    )
+   deck = pdk.Deck(
+    initial_view_state=view,
+    layers=layers,                           # camadas já têm id único com o nonce
+    map_style=None,                          # fundo claro via TileLayer
+    parameters={"clearColor": [0.97, 0.97, 0.97, 1.0]},
+    tooltip=tooltip,
+)
 
     # Render sem key (placeholder evita flicker)
     placeholder = st.empty()
