@@ -139,17 +139,18 @@ tooltip = {
     "style": {"backgroundColor": "rgba(0,0,0,0.85)", "color": "white"},
 }
 
+# --- CAMADA DE PONTOS (substitua a atual) ---
 points_layer = pdk.Layer(
     "ScatterplotLayer",
     data=df_map,
     get_position='[longitude, latitude]',
     get_fill_color='rgba',
-    get_radius=point_size,          # pixels
-    radius_units="pixels",
+    get_radius=1,                 # metros (valor qualquer, vai ser "clampado")
+    radius_min_pixels=point_size, # garante tamanho em PIXELS (visível em qualquer zoom)
     pickable=True,
     stroked=True,
     get_line_color=[0, 0, 0, 100],
-    line_width_min_pixels=1,
+    line_width_min_pixels=1.5,
 )
 
 # Base Carto (não precisa de token)
