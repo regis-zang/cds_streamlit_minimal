@@ -178,41 +178,47 @@ tab_map, tab_charts = st.tabs(["🗺️  Mapa", "📊  CDs & Raios"])
 with tab_map:
     st.subheader("Mapa por cluster")
 
-    # cores por cluster
+    # ---- Paleta e dados para os pontos
     palette = {}
     legend_items = []
-    if "cluster" in df_map.columns and df_map["cluster"].notna().any():
-        ordered = sorted(df_map["cluster"].dropna().astype(int).unique().tolist())
+    df_map_local = df_map.copy()  # nunca use o DF “vivo” no layer
+
+    if "cluster" in df_map_local.columns and df_map_local["cluster"].notna().any():
+        ordered = sorted(df_map_local["cluster"].dropna().astype(int).unique().tolist())
         palette = make_palette(ordered)
-        default_color = [120,120,120,180]
-        df_map = df_map.copy()
-        df_map["rgba"] = df_map["cluster"].map(
+        default_color = [120, 120, 120, 180]
+
+        df_map_local["rgba"] = df_map_local["cluster"].map(
             lambda c: palette.get(int(c) if pd.notna(c) else None, default_color)
         )
         legend_items = [(c, palette[c]) for c in ordered]
     else:
-        df_map = df_map.copy()
-        df_map["rgba"] = [[30,144,255,200]] * len(df_map)
+        df_map_local["rgba"] = [[30, 144, 255, 200]] * len(df_map_local)
 
-    view = compute_view(df_map)
+    # ➜ converte em registros “puros” (JSON-safe) para o PyDeck
+    points_records = (
+        df_map_local[["longitude", "latitude", "cluster", "rgba"]]
+        .astype({"longitude": float, "latitude": float})
+        .to_dict(orient="records")
+    )
 
-    # camada de pontos (tamanho em pixels)
+    view = compute_view(df_map_local)
+
     points_layer = pdk.Layer(
         "ScatterplotLayer",
-        data=df_map,
+        data=points_records,                           # ← lista de dicts
         get_position='[longitude, latitude]',
         get_fill_color='rgba',
-        get_radius=1,                 # metros (irrelevante com radius_min_pixels)
-        radius_min_pixels=point_size, # garante pixels
+        get_radius=1,
+        radius_min_pixels=int(point_size),
         pickable=True,
         stroked=True,
-        get_line_color=[0,0,0,100],
+        get_line_color=[0, 0, 0, 100],
         line_width_min_pixels=1,
     )
 
     layers = []
 
-    # fundo OSM (como na referência) ou Carto
     if base_choice == "OSM Standard":
         layers.append(pdk.Layer(
             "TileLayer",
@@ -222,19 +228,25 @@ with tab_map:
 
     layers.append(points_layer)
 
-    # círculos p90 por cluster
+    # ---- Círculos p90
     if show_areas and not summary.empty:
         areas = summary.copy()
         def col(c):
-            base = palette.get(int(c), [80,120,255,160]) if palette else [80,120,255,160]
+            base = palette.get(int(c), [80, 120, 255, 160]) if palette else [80, 120, 255, 160]
             return [base[0], base[1], base[2], 80]
         areas["rgba"] = areas["cluster"].apply(col)
 
+        areas_records = (
+            areas[["centroid_lon", "centroid_lat", "radius_m", "rgba", "cluster", "n_points"]]
+            .astype({"centroid_lon": float, "centroid_lat": float, "radius_m": float})
+            .to_dict(orient="records")
+        )
+
         layers.append(pdk.Layer(
             "ScatterplotLayer",
-            data=areas,
+            data=areas_records,                         # ← lista de dicts
             get_position='[centroid_lon, centroid_lat]',
-            get_radius="radius_m",     # metros (aqui sim é real)
+            get_radius="radius_m",
             radius_units="meters",
             pickable=True,
             filled=True,
@@ -244,21 +256,26 @@ with tab_map:
             line_width_min_pixels=2,
         ))
 
-    # rótulos (n_points) no centro
+    # ---- Rótulos (n_points)
     if show_labels and not summary.empty:
+        labels_records = (
+            summary[["centroid_lon", "centroid_lat", "n_points"]]
+            .astype({"centroid_lon": float, "centroid_lat": float})
+            .to_dict(orient="records")
+        )
         layers.append(pdk.Layer(
             "TextLayer",
-            data=summary,
+            data=labels_records,                        # ← lista de dicts
             get_position='[centroid_lon, centroid_lat]',
             get_text='n_points',
             get_size=16,
-            get_color=[40,40,40,230],
+            get_color=[40, 40, 40, 230],
             get_alignment_baseline='"bottom"',
         ))
 
     tooltip = {
         "html": "<b>Cluster:</b> {cluster}<br/><b>Lat:</b> {latitude}<br/><b>Lon:</b> {longitude}",
-        "style": {"backgroundColor":"rgba(0,0,0,0.85)","color":"white"}
+        "style": {"backgroundColor": "rgba(0,0,0,0.85)", "color": "white"}
     }
 
     if base_choice == "Carto Light":
@@ -267,22 +284,8 @@ with tab_map:
     else:
         deck = pdk.Deck(initial_view_state=view, layers=layers, tooltip=tooltip)
 
-    st.pydeck_chart(deck, use_container_width=True)
-
-    if show_legend and legend_items:
-        st.markdown("#### Legenda (cluster → cor)")
-        html = "<div style='display:flex;flex-wrap:wrap;gap:10px'>"
-        for c, col in legend_items:
-            r,g,b,a = col
-            html += (
-                f"<div style='display:flex;align-items:center;gap:6px;"
-                f"border:1px solid #ddd;border-radius:6px;padding:4px 8px;'>"
-                f"<span style='width:14px;height:14px;background:rgba({r},{g},{b},{a/255});"
-                f"border:1px solid #666;display:inline-block;border-radius:3px'></span>"
-                f"<span>Cluster {c}</span></div>"
-            )
-        html += "</div>"
-        st.markdown(html, unsafe_allow_html=True)
+    # ➜ key garante re-render ao trocar de aba
+    st.pydeck_chart(deck, use_container_width=True, key="map_deck")
 
 with tab_charts:
     st.subheader("CDs & Raios (resumo por cluster)")
