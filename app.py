@@ -242,18 +242,14 @@ with tab_map:
     view = compute_view(df_map_local)
 
     # Basemap com TileLayer (compatível)
-    if base_choice == "Carto Light":
-        base_layer = pdk.Layer(
-            "TileLayer",
-            data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-            min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
-        )
-    else:  # OSM
-        base_layer = pdk.Layer(
-            "TileLayer",
-            data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-            min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
-        )
+deck = pdk.Deck(
+    initial_view_state=view,
+    layers=[base_layer, points_layer, circles_layer, centroid_layer],
+    map_style=None,                                # <- sem estilo Mapbox (evita fundo escuro)
+    parameters={"clearColor": [0.97, 0.97, 0.97, 1.0]},  # <- fundo clarinho
+    tooltip=tooltip,
+)
+st.pydeck_chart(deck, use_container_width=True, key="map_deck")
 
     points_layer = pdk.Layer(
         "ScatterplotLayer",
