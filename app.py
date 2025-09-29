@@ -12,15 +12,17 @@ st.set_page_config(page_title="CDs • Mapa e Raios", layout="wide")
 DATA_DIR = Path("DataBase")
 FILE = DATA_DIR / "points_enriched_final.parquet"
 
-# -------------------- Utils --------------------
+# ========================= Utils =========================
 @st.cache_data(show_spinner=False)
 def load_parquet_safe(p: Path) -> pd.DataFrame:
+    """Lê o parquet com fallback para fastparquet."""
     if not p.exists():
         raise FileNotFoundError(f"Parquet não encontrado: {p}")
     try:
         return pd.read_parquet(p)
     except Exception:
         return pd.read_parquet(p, engine="fastparquet")
+
 
 def clean_geo(df: pd.DataFrame, lon: str, lat: str) -> pd.DataFrame:
     g = df.copy()
@@ -29,6 +31,7 @@ def clean_geo(df: pd.DataFrame, lon: str, lat: str) -> pd.DataFrame:
     g = g.dropna(subset=[lon, lat])
     return g[g[lon].between(-180, 180) & g[lat].between(-90, 90)]
 
+
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0088
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
@@ -36,9 +39,12 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
     return 2*R*np.arcsin(np.sqrt(a))
 
-def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Centroides (média), raio p90 (km) e nº de pontos por cluster."""
 
+def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Centróide (média), raio p90 (km) e nº de pontos por cluster.
+    Versão robusta usando aggregations nomeadas (evita KeyError).
+    """
     if "cluster" not in df.columns:
         return pd.DataFrame(columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"])
 
@@ -48,14 +54,14 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     base["cluster"] = base["cluster"].astype(int)
 
-    # Aggregations nomeadas (evita problemas de rename)
+    # centróides com nomes definidos
     cent = (base.groupby("cluster", as_index=False)
                  .agg(centroid_lat=("latitude", "mean"),
                       centroid_lon=("longitude", "mean")))
 
     tmp = base.merge(cent, on="cluster", how="left")
 
-    # Distância Haversine até o centróide
+    # distância até o centróide
     tmp["dist_km"] = haversine_km(tmp["latitude"], tmp["longitude"],
                                   tmp["centroid_lat"], tmp["centroid_lon"])
 
@@ -69,13 +75,16 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     out["radius_m"] = out["radius_km"] * 1000.0
     return out.sort_values("cluster")
 
+
 def make_palette(values: list[int]) -> dict[int, list]:
+    """Cores RGBA por cluster (estáveis)."""
     n = max(1, len(values))
     pal = {}
     for i, c in enumerate(values):
         r, g, b = colorsys.hsv_to_rgb(i / n, 0.65, 0.95)
         pal[int(c)] = [int(r*255), int(g*255), int(b*255), 210]
     return pal
+
 
 def compute_view(df: pd.DataFrame) -> pdk.ViewState:
     if df.empty:
@@ -85,25 +94,29 @@ def compute_view(df: pd.DataFrame) -> pdk.ViewState:
     zoom = 3.5 if spread > 20 else 5 if spread > 8 else 6.5 if spread > 3 else 8
     return pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=zoom)
 
-# -------------------- Load --------------------
+
+# ========================= Load =========================
 df = load_parquet_safe(FILE)
 df.columns = [c.strip().lower() for c in df.columns]
+# padroniza nomes de lat/lon
 ren = {}
 if "lng" in df.columns:  ren["lng"] = "longitude"
 if "lon" in df.columns:  ren["lon"] = "longitude"
 if "long" in df.columns: ren["long"] = "longitude"
 if "lat" in df.columns:  ren["lat"] = "latitude"
 df = df.rename(columns=ren)
-if not {"latitude","longitude"}.issubset(df.columns):
-    st.error("Colunas latitude/longitude não encontradas."); st.stop()
 
-# cluster como inteiro, se existir
+if not {"latitude","longitude"}.issubset(df.columns):
+    st.error("Colunas latitude/longitude não encontradas.")
+    st.stop()
+
+# cluster como inteiro (se existir)
 if "cluster" in df.columns:
     df["cluster"] = pd.to_numeric(df["cluster"], errors="coerce").astype("Int64")
 
 df = clean_geo(df, "longitude", "latitude")
 
-# -------------------- Sidebar --------------------
+# ========================= Sidebar =========================
 st.sidebar.header("Filtros")
 
 if "cluster" in df.columns and df["cluster"].notna().any():
@@ -115,14 +128,14 @@ else:
     st.sidebar.info("Coluna 'cluster' não encontrada — mostrando todos os pontos.")
     sel_clusters = []
 
-max_points = st.sidebar.slider("Máx. de pontos no mapa", 500, 30000, 8000, step=500)
-point_size = st.sidebar.slider("Tamanho do marcador (px)", 2, 12, 6)
+max_points  = st.sidebar.slider("Máx. de pontos no mapa", 500, 30000, 8000, step=500)
+point_size  = st.sidebar.slider("Tamanho do marcador (px)", 2, 12, 6)
 base_choice = st.sidebar.selectbox("Fundo do mapa", ["Carto Light", "OSM Standard"])
 show_legend = st.sidebar.checkbox("Mostrar legenda de cores", value=True)
-show_areas = st.sidebar.checkbox("Mostrar círculos p90 por CD", value=True)
+show_areas  = st.sidebar.checkbox("Mostrar círculos p90 por CD", value=True)
 show_labels = st.sidebar.checkbox("Mostrar contagem no centróide", value=True)
 
-# Amostra pro mapa
+# Amostra para o mapa
 df_map = df if len(df) <= max_points else df.sample(max_points, random_state=42)
 
 # KPIs
@@ -132,16 +145,18 @@ c2.metric("Pontos no mapa (amostra)", len(df_map))
 c3.metric("Lat range", f"{df['latitude'].min():.3f} ~ {df['latitude'].max():.3f}")
 c4.metric("Lon range", f"{df['longitude'].min():.3f} ~ {df['longitude'].max():.3f}")
 
-# Resumo de CDs (centroide, raio p90, n_points)
+# Resumo por cluster (CDs)
 summary = compute_cluster_summary(df)
 
-# -------------------- Tabs --------------------
+# ========================= Tabs =========================
 tab_map, tab_charts = st.tabs(["🗺️  Mapa", "📊  CDs & Raios"])
 
 with tab_map:
     st.subheader("Mapa por cluster")
 
-    # Cores por cluster
+    # cores por cluster
+    palette = {}
+    legend_items = []
     if "cluster" in df_map.columns and df_map["cluster"].notna().any():
         ordered = sorted(df_map["cluster"].dropna().astype(int).unique().tolist())
         palette = make_palette(ordered)
@@ -154,18 +169,17 @@ with tab_map:
     else:
         df_map = df_map.copy()
         df_map["rgba"] = [[30,144,255,200]] * len(df_map)
-        legend_items = []
 
     view = compute_view(df_map)
 
-    # Camada de pontos (pixels)
+    # camada de pontos (tamanho em pixels)
     points_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
         get_position='[longitude, latitude]',
         get_fill_color='rgba',
-        get_radius=1,                 # metros (qualquer), tamanho real via radius_min_pixels
-        radius_min_pixels=point_size,
+        get_radius=1,                 # metros (irrelevante com radius_min_pixels)
+        radius_min_pixels=point_size, # garante pixels
         pickable=True,
         stroked=True,
         get_line_color=[0,0,0,100],
@@ -174,7 +188,7 @@ with tab_map:
 
     layers = []
 
-    # Fundo OSM opcional (como na sua imagem)
+    # fundo OSM (como na referência) ou Carto
     if base_choice == "OSM Standard":
         layers.append(pdk.Layer(
             "TileLayer",
@@ -184,22 +198,19 @@ with tab_map:
 
     layers.append(points_layer)
 
-    # Círculos p90 por cluster
+    # círculos p90 por cluster
     if show_areas and not summary.empty:
-        # cor: mesma da paleta do cluster (se existir), com mais transparência
         areas = summary.copy()
         def col(c):
-            if "cluster" in df_map.columns and df_map["cluster"].notna().any():
-                base = palette.get(int(c), [80,120,255,160])
-            else:
-                base = [80,120,255,160]
-            return [base[0], base[1], base[2], 80]  # alpha menor
+            base = palette.get(int(c), [80,120,255,160]) if palette else [80,120,255,160]
+            return [base[0], base[1], base[2], 80]
         areas["rgba"] = areas["cluster"].apply(col)
+
         layers.append(pdk.Layer(
             "ScatterplotLayer",
             data=areas,
             get_position='[centroid_lon, centroid_lat]',
-            get_radius="radius_m",      # METROS
+            get_radius="radius_m",     # metros (aqui sim é real)
             radius_units="meters",
             pickable=True,
             filled=True,
@@ -209,7 +220,7 @@ with tab_map:
             line_width_min_pixels=2,
         ))
 
-    # Rótulos (nº de pontos) no centro
+    # rótulos (n_points) no centro
     if show_labels and not summary.empty:
         layers.append(pdk.Layer(
             "TextLayer",
@@ -226,17 +237,14 @@ with tab_map:
         "style": {"backgroundColor":"rgba(0,0,0,0.85)","color":"white"}
     }
 
-    # Deck
     if base_choice == "Carto Light":
         deck = pdk.Deck(map_provider="carto", map_style="light",
                         initial_view_state=view, layers=layers, tooltip=tooltip)
     else:
-        # sem map_style; usamos só o TileLayer OSM
         deck = pdk.Deck(initial_view_state=view, layers=layers, tooltip=tooltip)
 
     st.pydeck_chart(deck, use_container_width=True)
 
-    # Legenda
     if show_legend and legend_items:
         st.markdown("#### Legenda (cluster → cor)")
         html = "<div style='display:flex;flex-wrap:wrap;gap:10px'>"
@@ -257,16 +265,15 @@ with tab_charts:
     if summary.empty:
         st.info("Não foi possível calcular o resumo (verifique a coluna 'cluster').")
     else:
-        # Tabela
-        st.dataframe(summary[['cluster','centroid_lat','centroid_lon','radius_km','n_points']],
-                     use_container_width=True)
+        st.dataframe(
+            summary[['cluster','centroid_lat','centroid_lon','radius_km','n_points']],
+            use_container_width=True
+        )
 
-        # Downloads
         csv = summary.to_csv(index=False).encode("utf-8")
         st.download_button("Baixar resumo (CSV)", data=csv,
                            file_name="cds_resumo.csv", mime="text/csv")
 
-        # Charts
         c1, c2 = st.columns(2)
 
         bar_pts = (alt.Chart(summary)
@@ -284,7 +291,7 @@ with tab_charts:
         c1.altair_chart(bar_pts, use_container_width=True)
         c2.altair_chart(bar_rad, use_container_width=True)
 
-# -------------------- Prévia --------------------
+# ========================= Prévia =========================
 st.subheader("Prévia dos dados filtrados")
 view_cols = [c for c in ["cluster","latitude","longitude"] if c in df.columns]
 st.dataframe(df[view_cols].head(1000), use_container_width=True)
