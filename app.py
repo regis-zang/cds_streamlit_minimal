@@ -36,30 +36,58 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
     return 2*R*np.arcsin(np.sqrt(a))
 
+O ChatGPT disse:
+
+boa, Zerks — o erro veio do cálculo do resumo por cluster.
+O KeyError: 'centroid_lat' acontece porque, em alguns ambientes, o rename() depois do groupby().mean() está deixando os nomes diferentes do esperado no merge. Vamos trocar por aggregations nomeadas (mais estáveis) e fica 100% à prova de susto.
+
+Troque só esta função no seu app.py
+
+Substitua a função compute_cluster_summary atual por esta versão:
+
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """centroide (média), raio p90 (km) e nº de pontos por cluster."""
+    """Centroides (média), raio p90 (km) e nº de pontos por cluster."""
+
+    if "cluster" not in df.columns:
+        return pd.DataFrame(columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"])
+
     base = df.dropna(subset=["cluster"]).copy()
+    if base.empty:
+        return pd.DataFrame(columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"])
+
     base["cluster"] = base["cluster"].astype(int)
 
-    cent = (base.groupby("cluster")[["latitude","longitude"]]
-                 .mean()
-                 .rename(columns={"latitude":"centroid_lat","longitude":"centroid_lon"})
-                 .reset_index())
+    # Aggregations nomeadas (evita problemas de rename)
+    cent = (base.groupby("cluster", as_index=False)
+                 .agg(centroid_lat=("latitude", "mean"),
+                      centroid_lon=("longitude", "mean")))
 
     tmp = base.merge(cent, on="cluster", how="left")
+
+    # Distância Haversine até o centróide
     tmp["dist_km"] = haversine_km(tmp["latitude"], tmp["longitude"],
                                   tmp["centroid_lat"], tmp["centroid_lon"])
 
-    r90 = (tmp.groupby("cluster")["dist_km"]
-              .quantile(0.90)
-              .reset_index()
-              .rename(columns={"dist_km":"radius_km"}))
+    r90 = (tmp.groupby("cluster", as_index=False)["dist_km"]
+             .quantile(0.90)
+             .rename(columns={"dist_km": "radius_km"}))
 
-    npts = base.groupby("cluster").size().reset_index(name="n_points")
+    npts = base.groupby("cluster", as_index=False).size().rename(columns={"size": "n_points"})
 
     out = cent.merge(r90, on="cluster").merge(npts, on="cluster")
     out["radius_m"] = out["radius_km"] * 1000.0
     return out.sort_values("cluster")
+
+
+Dica: depois de salvar, clique em Rerun (ou no menu “hambúrguer” → Clear cache e Rerun) para garantir que o @st.cache_data não está segurando versão antiga.
+
+Por que resolve?
+
+Usando agg nomeado (agg(centroid_lat=("latitude","mean"), ...)) não dependemos de rename pós-mean(), então as colunas sempre saem como centroid_lat/centroid_lon.
+
+O restante do fluxo (merge, p90, n_points) fica igual e estável.
+
+Se quiser, depois coloco um IconLayer com estrela no centróide pra ficar igualzinho ao seu mockup, e um switch de heatmap. Só falar! 💪
 
 def make_palette(values: list[int]) -> dict[int, list]:
     n = max(1, len(values))
