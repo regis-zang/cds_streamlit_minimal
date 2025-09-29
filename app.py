@@ -112,8 +112,14 @@ c4.metric("Lon range", f"{lon_min:.3f} ~ {lon_max:.3f}")
 if "cluster" in df_map.columns and df_map["cluster"].notna().any():
     ordered = sorted(df_map["cluster"].dropna().astype(int).unique().tolist())
     palette = make_palette(ordered)
+    default_color = [120, 120, 120, 180]
+
     df_map = df_map.copy()
-    df_map["rgba"] = df_map["cluster"].astype("Int64").map(palette).fillna([120,120,120,180])
+    # mapeia cor por cluster com fallback seguro
+    df_map["rgba"] = df_map["cluster"].map(
+        lambda c: palette.get(int(c) if pd.notna(c) else None, default_color)
+    )
+
     legend_items = [(c, palette[c]) for c in ordered]
 else:
     # Sem cluster: cor única
