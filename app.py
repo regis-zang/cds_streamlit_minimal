@@ -69,17 +69,6 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     out["radius_m"] = out["radius_km"] * 1000.0
     return out.sort_values("cluster")
 
-
-Dica: depois de salvar, clique em Rerun (ou no menu “hambúrguer” → Clear cache e Rerun) para garantir que o @st.cache_data não está segurando versão antiga.
-
-Por que resolve?
-
-Usando agg nomeado (agg(centroid_lat=("latitude","mean"), ...)) não dependemos de rename pós-mean(), então as colunas sempre saem como centroid_lat/centroid_lon.
-
-O restante do fluxo (merge, p90, n_points) fica igual e estável.
-
-Se quiser, depois coloco um IconLayer com estrela no centróide pra ficar igualzinho ao seu mockup, e um switch de heatmap. Só falar! 💪
-
 def make_palette(values: list[int]) -> dict[int, list]:
     n = max(1, len(values))
     pal = {}
