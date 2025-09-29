@@ -43,27 +43,45 @@ def haversine_km(lat1, lon1, lat2, lon2):
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     Centróide (média), raio p90 (km) e nº de pontos por cluster.
-    Versão robusta usando aggregations nomeadas (evita KeyError).
+    Robusta a colisões de nomes (centroid_* já existentes no Parquet).
     """
+    empty_cols = ["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"]
     if "cluster" not in df.columns:
-        return pd.DataFrame(columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"])
+        return pd.DataFrame(columns=empty_cols)
 
     base = df.dropna(subset=["cluster"]).copy()
     if base.empty:
-        return pd.DataFrame(columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points", "radius_m"])
+        return pd.DataFrame(columns=empty_cols)
 
     base["cluster"] = base["cluster"].astype(int)
+
+    # Se vieram do Parquet colunas antigas de centróide / métricas, removo para não gerar sufixos.
+    drop_cols = [c for c in ["centroid_lat", "centroid_lon", "radius_km", "radius_m", "n_points", "dist_km"] if c in base.columns]
+    if drop_cols:
+        base = base.drop(columns=drop_cols)
 
     # centróides com nomes definidos
     cent = (base.groupby("cluster", as_index=False)
                  .agg(centroid_lat=("latitude", "mean"),
                       centroid_lon=("longitude", "mean")))
 
+    # merge (se por qualquer motivo ainda houver colisão, o Pandas pode sufixar)
     tmp = base.merge(cent, on="cluster", how="left")
 
+    # identifica os nomes reais das colunas de centróide pós-merge
+    def pick_col(prefix: str) -> str:
+        if prefix in tmp.columns:
+            return prefix
+        cand = [c for c in tmp.columns if c.startswith(prefix)]
+        if cand:
+            return cand[0]
+        raise KeyError(prefix)
+
+    latc = pick_col("centroid_lat")
+    lonc = pick_col("centroid_lon")
+
     # distância até o centróide
-    tmp["dist_km"] = haversine_km(tmp["latitude"], tmp["longitude"],
-                                  tmp["centroid_lat"], tmp["centroid_lon"])
+    tmp["dist_km"] = haversine_km(tmp["latitude"], tmp["longitude"], tmp[latc], tmp[lonc])
 
     r90 = (tmp.groupby("cluster", as_index=False)["dist_km"]
              .quantile(0.90)
