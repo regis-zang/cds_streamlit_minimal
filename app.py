@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 import altair as alt
+from time import time
 
 # =========================================
 # Config
@@ -93,10 +94,6 @@ def legend_html(selected_clusters):
         )
     return " ".join(chips)
 
-def bump_nonce() -> int:
-    st.session_state["_map_nonce"] = st.session_state.get("_map_nonce", 0) + 1
-    return st.session_state["_map_nonce"]
-
 # =========================================
 # Dados
 # =========================================
@@ -151,8 +148,13 @@ with tab_map:
         st.info("Nenhum cluster selecionado.")
         st.stop()
 
+    # ---- ID único para evitar reaproveitamento de contexto ao trocar de aba
+    nonce = int(time() * 1e3)
+
+    # Basemap (TileLayer)
     base_layer = pdk.Layer(
         "TileLayer",
+        id=f"base_{nonce}",
         data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
         min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
     )
@@ -160,6 +162,7 @@ with tab_map:
     df["rgba"] = df["cluster"].map(color_for_cluster)
     points_layer = pdk.Layer(
         "ScatterplotLayer",
+        id=f"pts_{nonce}",
         data=df,
         get_position="[longitude, latitude]",
         get_fill_color="rgba",
@@ -179,6 +182,7 @@ with tab_map:
     if show_circles:
         circles = pdk.Layer(
             "ScatterplotLayer",
+            id=f"circles_{nonce}",
             data=resumo,
             get_position="[centroid_lon, centroid_lat]",
             get_radius="radius_km * 1000",
@@ -193,6 +197,7 @@ with tab_map:
     if show_counts:
         text = pdk.Layer(
             "TextLayer",
+            id=f"text_{nonce}",
             data=resumo.assign(label=resumo["n_points"].astype(str)),
             get_position="[centroid_lon, centroid_lat]",
             get_text="label",
@@ -219,18 +224,17 @@ with tab_map:
     }
 
     deck = pdk.Deck(
+        id=f"deck_{nonce}",
         initial_view_state=view,
         layers=layers,
-        map_style=None,  # evita fundo preto com TileLayer
+        map_style=None,                 # evita fundo preto (usamos TileLayer)
         parameters={"clearColor": [0.97, 0.97, 0.97, 1.0]},
         tooltip=tooltip,
     )
 
-    # >>>>>> AQUI A TROCA IMPORTANTE (sem key no pydeck_chart)
-    # usamos um container com key para "forçar" re-render ao alternar abas
-    holder = st.container(key=f"map_{bump_nonce()}")
-    with holder:
-        st.pydeck_chart(deck, use_container_width=True, height=650)
+    # Render sem key (placeholder evita flicker)
+    placeholder = st.empty()
+    placeholder.pydeck_chart(deck, use_container_width=True, height=650)
 
     if show_legend:
         st.markdown("**Legenda (cluster → cor)**")
