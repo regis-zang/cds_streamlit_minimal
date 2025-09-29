@@ -36,15 +36,6 @@ def haversine_km(lat1, lon1, lat2, lon2):
     a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
     return 2*R*np.arcsin(np.sqrt(a))
 
-O ChatGPT disse:
-
-boa, Zerks — o erro veio do cálculo do resumo por cluster.
-O KeyError: 'centroid_lat' acontece porque, em alguns ambientes, o rename() depois do groupby().mean() está deixando os nomes diferentes do esperado no merge. Vamos trocar por aggregations nomeadas (mais estáveis) e fica 100% à prova de susto.
-
-Troque só esta função no seu app.py
-
-Substitua a função compute_cluster_summary atual por esta versão:
-
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Centroides (média), raio p90 (km) e nº de pontos por cluster."""
 
