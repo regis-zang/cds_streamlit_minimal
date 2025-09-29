@@ -1,3 +1,6 @@
-streamlit==1.38.0
-pandas==2.2.3
-fastparquet==2024.5.0
+streamlit>=1.38
+pandas>=2.0
+numpy>=1.26
+pydeck>=0.8
+plotly>=5.20
+pyarrow>=14
