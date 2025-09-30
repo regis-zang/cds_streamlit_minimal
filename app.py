@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import numpy as np
 import pandas as pd
@@ -32,6 +33,7 @@ BASE_PALETTE = [
 # =========================
 # Funções auxiliares
 # =========================
+@st.cache_data(show_spinner=False)
 def load_points(path: str) -> pd.DataFrame:
     """Lê o Parquet e padroniza nomes + tipos."""
     df = pd.read_parquet(path)
@@ -57,6 +59,10 @@ def load_points(path: str) -> pd.DataFrame:
     df["cluster"] = pd.to_numeric(df["cluster"], errors="coerce").astype("Int64")
     df = df.dropna(subset=["latitude", "longitude", "cluster"]).copy()
     df["cluster"] = df["cluster"].astype(int)
+
+    # padroniza tipos numéricos
+    df["latitude"] = pd.to_numeric(df["latitude"], errors="coerce")
+    df["longitude"] = pd.to_numeric(df["longitude"], errors="coerce")
 
     return df.reset_index(drop=True)
 
@@ -120,8 +126,19 @@ def _ensure_centroid_columns_after_merge(base: pd.DataFrame) -> pd.DataFrame:
     return b
 
 
+@st.cache_data(show_spinner=False)
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Centróides, raio p90 e contagem por cluster — robusto a sufixos."""
+    """
+    Centróides, raio p90 e contagem por cluster — robusto a sufixos.
+    Usa cache (chave baseada em hash do subconjunto relevante).
+    """
+    # cria assinatura leve do DF para cache
+    sig = (
+        pd.util.hash_pandas_object(df[["cluster", "latitude", "longitude"]], index=False)
+        .sum()
+    )
+    _ = sig  # só para explicitar uso no cache
+
     cent = (
         df.groupby("cluster")[["latitude", "longitude"]]
         .mean()
@@ -189,8 +206,11 @@ def make_deck(
             get_fill_color="rgba",
             get_radius=60,
             pickable=True,
+            auto_highlight=True,
+            highlight_color=[255, 255, 255, 160],
             stroked=False,
             opacity=0.9,
+            parameters={"depthTest": False},
         )
     )
 
@@ -264,6 +284,12 @@ def legend_markdown(df_points: pd.DataFrame) -> str:
     return " &nbsp; ".join(parts)
 
 
+def deck_to_html_bytes(deck: pdk.Deck) -> bytes:
+    """Gera um HTML (self-contained) do mapa para download."""
+    html = deck.to_html(as_string=True, css_background_color="white")
+    return html.encode("utf-8")
+
+
 # =========================
 # App
 # =========================
@@ -288,58 +314,8 @@ else:
 df = add_rgba(df, alpha=185)
 
 # Métricas
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total de pontos (dados)", f"{len(df):,}".replace(",", "."))
-c2.metric("Pontos no mapa (amostra)", f"{len(df):,}".replace(",", "."))
-c3.metric("Lat range", f"{df['latitude'].min():.3f} ~ {df['latitude'].max():.3f}")
-c4.metric("Lon range", f"{df['longitude'].min():.3f} ~ {df['longitude'].max():.3f}")
+summary_for_metrics = compute_cluster_summary(df)
+total_area_km2 = float((np.pi * (summary_for_metrics["radius_km"] ** 2)).sum())
 
-# Abas
-tab_map, tab_charts = st.tabs(["🗺️  Mapa", "📊  CDs & Raios"])
-
-# ====== Mapa
-with tab_map:
-    st.subheader("Mapa por cluster")
-    view = pdk.ViewState(
-        latitude=float(df["latitude"].mean()),
-        longitude=float(df["longitude"].mean()),
-        zoom=6, pitch=0, bearing=0,
-    )
-    deck = make_deck(df, show_r90=show_r90, show_counts=show_counts, view_state=view)
-    st.pydeck_chart(deck, use_container_width=True)
-
-    if show_legend:
-        st.markdown("**Legenda (cluster → cor)**")
-        st.markdown(legend_markdown(df), unsafe_allow_html=True)
-
-# ====== Tabelas/Gráficos
-with tab_charts:
-    st.subheader("CDs & Raios (resumo por cluster)")
-    summary = compute_cluster_summary(df)
-    st.dataframe(summary, use_container_width=True)
-
-    csv_bytes = summary.to_csv(index=False).encode("utf-8")
-    st.download_button("Baixar resumo (CSV)", data=csv_bytes, file_name="cds_raios_resumo.csv", mime="text/csv")
-
-    g1, g2 = st.columns(2)
-    with g1:
-        fig = px.bar(
-            summary.sort_values("n_points", ascending=True),
-            x="n_points", y="cluster", orientation="h",
-            color="cluster",
-            color_discrete_sequence=[f"rgb{color_for_cluster(c)}" for c in summary["cluster"]],
-            title="Pontos por cluster",
-        )
-        fig.update_layout(height=420, showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with g2:
-        fig2 = px.bar(
-            summary.sort_values("radius_km", ascending=True),
-            x="radius_km", y="cluster", orientation="h",
-            color="cluster",
-            color_discrete_sequence=[f"rgb{color_for_cluster(c)}" for c in summary["cluster"]],
-            title="Raio p90 (km) por cluster",
-        )
-        fig2.update_layout(height=420, showlegend=False, margin=dict(l=10, r=10, t=40, b=10))
-        st.plotly_chart(fig2, use_container_width=True)
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metr
