@@ -16,7 +16,7 @@ st.set_page_config(
 
 DATA_FILE = "DataBase/points_enriched_final.parquet"
 
-# Paleta fixa (RGBA) para 5 clusters: 0..4
+# Paleta RGBA fixa para clusters 0..4
 PALETTE = {
     0: [230, 57, 70, 220],   # vermelho
     1: [46, 204, 113, 220],  # verde
@@ -24,7 +24,7 @@ PALETTE = {
     3: [155, 89, 182, 220],  # roxo
     4: [241, 196, 15, 220],  # amarelo
 }
-FALLBACK = [80, 80, 80, 180]  # caso apareça cluster fora do esperado
+FALLBACK = [80, 80, 80, 180]  # cor caso apareça cluster fora da paleta
 
 
 # ------------------------------------------------------------
@@ -33,36 +33,30 @@ FALLBACK = [80, 80, 80, 180]  # caso apareça cluster fora do esperado
 @st.cache_data(show_spinner=False)
 def load_points(path: str) -> pd.DataFrame:
     df = pd.read_parquet(path)
-    # normaliza nomes esperados
-    df = df.rename(columns={
-        "lat": "latitude",
-        "lng": "longitude",
-        "lon": "longitude",
-    })
+    df = df.rename(columns={"lat": "latitude", "lng": "longitude", "lon": "longitude"})
     return df
 
 
 def colorize(df: pd.DataFrame) -> pd.DataFrame:
     """
     Cria colunas [r,g,b,a] com base em 'cluster' para o ScatterplotLayer.
+    Usa fallback elemento a elemento (sem fillna com lista).
     """
     out = df.copy()
     cl = pd.to_numeric(out["cluster"], errors="coerce").astype("Int64")
-    rgba = cl.map(PALETTE).fillna([FALLBACK]).astype(object)
-    out[["r", "g", "b", "a"]] = pd.DataFrame(rgba.tolist(), index=out.index)
+    colors = cl.map(PALETTE)
+    colors = colors.apply(lambda c: c if isinstance(c, (list, tuple, np.ndarray)) else FALLBACK)
+    out[["r", "g", "b", "a"]] = pd.DataFrame(list(colors), index=out.index)
     return out
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
-    """
-    Distância Haversine em KM entre (lat1,lon1) e (lat2,lon2) – vetorizado.
-    """
+    """Distância Haversine em KM – vetorizado."""
     R = 6371.0
     p1 = np.radians(lat1)
     p2 = np.radians(lat2)
     dlat = p2 - p1
     dlon = np.radians(lon2) - np.radians(lon1)
-
     a = np.sin(dlat / 2.0) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dlon / 2.0) ** 2
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
@@ -70,12 +64,8 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calcula, por cluster:
-      - centróide (média de lat/lon)
-      - raio p90 (km)
-      - contagem de pontos
+    Para cada cluster: centróide (média), raio p90 (km) e contagem.
     """
-    # centróides simples (média)
     cent = (
         df.groupby("cluster", as_index=False)
         .agg(centroid_lat=("latitude", "mean"),
@@ -83,7 +73,6 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
              n_points=("cluster", "size"))
     )
 
-    # distância de cada ponto ao centróide do seu cluster
     base = df.merge(cent, on="cluster", how="left")
     base["dist_km"] = haversine_km(
         base["latitude"], base["longitude"],
@@ -107,30 +96,21 @@ def build_deck(
     show_counts: bool,
 ) -> pdk.Deck:
     """
-    Monta o mapa com:
-      - TileLayer (base map)
-      - pontos por cluster (cores RGBA)
-      - círculos p90 (opcional)
-      - contagem no centróide (opcional)
+    TileLayer + pontos RGBA + círculos p90 (opcional) + rótulos no centróide (opcional).
     """
 
-    # --- camada de base (Carto Light) ---
     base_layer = pdk.Layer(
         "TileLayer",
         data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        min_zoom=0,
-        max_zoom=19,
-        tile_size=256,
-        opacity=1.0,
+        min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
     )
 
-    # --- pontos coloridos por cluster (usa [r,g,b,a]) ---
     pts = pdk.Layer(
         "ScatterplotLayer",
         data=df_points,
         get_position='[longitude, latitude]',
         get_fill_color='[r, g, b, a]',
-        get_radius=80,                 # em metros (aprox.)
+        get_radius=80,                 # metros aprox.
         radius_min_pixels=3,
         radius_max_pixels=12,
         stroked=False,
@@ -139,7 +119,6 @@ def build_deck(
 
     layers = [base_layer, pts]
 
-    # --- círculos p90 ---
     if show_p90 and not summary.empty:
         s = summary.copy()
         s["radius_m"] = s["radius_km"].fillna(0) * 1000.0
@@ -157,7 +136,6 @@ def build_deck(
         )
         layers.append(rings)
 
-    # --- contagem no centróide ---
     if show_counts and not summary.empty:
         labels = pdk.Layer(
             "TextLayer",
@@ -171,12 +149,9 @@ def build_deck(
         )
         layers.append(labels)
 
-    # viewport: ajusta pro conjunto atual
     if len(df_points) > 0:
         v = pdk.data_utils.compute_view(
-            df_points[["longitude", "latitude"]].rename(columns={
-                "longitude": "lon", "latitude": "lat"
-            })
+            df_points[["longitude", "latitude"]].rename(columns={"longitude": "lon", "latitude": "lat"})
         )
         v.pitch = 0
         v.bearing = 0
@@ -191,7 +166,7 @@ def build_deck(
     deck = pdk.Deck(
         layers=layers,
         initial_view_state=v,
-        map_provider=None,   # estamos usando TileLayer (não usar Mapbox)
+        map_provider=None,  # usando TileLayer
         map_style=None,
         tooltip=tooltip,
     )
@@ -203,21 +178,20 @@ def build_deck(
 # ------------------------------------------------------------
 st.title("Pontos por cluster (cores distintas)")
 
-# Carrega dados
 df_all = load_points(DATA_FILE)
 
-# Filtros à esquerda
+# Sidebar
 with st.sidebar:
     st.subheader("Filtros")
     clusters = sorted(pd.to_numeric(df_all["cluster"], errors="coerce").dropna().astype(int).unique().tolist())
-    sel = st.multiselect("Clusters", clusters, default=clusters, label_visibility="collapsed")
+    selected = st.multiselect("Clusters", clusters, default=clusters, label_visibility="collapsed")
     st.divider()
     show_legend = st.checkbox("Mostrar legenda de cores", value=True)
     show_p90 = st.checkbox("Mostrar círculos p90 por CD", value=True)
     show_counts = st.checkbox("Mostrar contagem no centróide", value=True)
 
-# Aplica filtro
-df_map = df_all[df_all["cluster"].isin(sel)].copy()
+# Filtro
+df_map = df_all[df_all["cluster"].isin(selected)].copy()
 
 # Métricas
 c1, c2, c3, c4 = st.columns(4)
@@ -230,36 +204,33 @@ else:
     c3.metric("Lat range", "-")
     c4.metric("Lon range", "-")
 
-# Abas
 tab_map, tab_charts = st.tabs(["🗺️ Mapa", "📊 CDs & Raios"])
 
 # ------------------------ Mapa ------------------------
 with tab_map:
     st.subheader("Mapa por cluster")
 
-    # cria colunas de cor (r,g,b,a)
+    # cores RGBA
     df_map = colorize(df_map)
 
-    # resumo para p90/labels
+    # resumo (p90/labels)
     summary = compute_cluster_summary(df_map) if len(df_map) else pd.DataFrame(
         columns=["cluster", "centroid_lat", "centroid_lon", "n_points", "radius_km"]
     )
 
-    deck = build_deck(
-        df_points=df_map,
-        summary=summary,
-        show_p90=show_p90,
-        show_counts=show_counts,
-    )
+    deck = build_deck(df_points=df_map, summary=summary, show_p90=show_p90, show_counts=show_counts)
     st.pydeck_chart(deck, use_container_width=True)
 
-    # legenda simples
     if show_legend:
         st.markdown("**Legenda (cluster → cor)**")
         cols = st.columns(len(PALETTE))
         for i, cl in enumerate(sorted(PALETTE.keys())):
             rgba = PALETTE[cl]
-            swatch = f"background-color: rgba({rgba[0]}, {rgba[1]}, {rgba[2]}, {rgba[3]/255:.2f}); width:14px; height:14px; display:inline-block; border-radius:50%; margin-right:6px;"
+            swatch = (
+                f"background-color: rgba({rgba[0]}, {rgba[1]}, {rgba[2]}, {rgba[3]/255:.2f}); "
+                "width:14px; height:14px; display:inline-block; border-radius:50%; "
+                "margin-right:6px;"
+            )
             with cols[i]:
                 st.markdown(f"<span style='{swatch}'></span> Cluster {cl}", unsafe_allow_html=True)
 
@@ -271,17 +242,7 @@ with tab_charts:
         columns=["cluster", "centroid_lat", "centroid_lon", "n_points", "radius_km"]
     )
 
-    st.dataframe(
-        summary.rename(columns={
-            "cluster": "cluster",
-            "centroid_lat": "centroid_lat",
-            "centroid_lon": "centroid_lon",
-            "radius_km": "radius_km",
-            "n_points": "n_points",
-        }),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(summary, use_container_width=True, hide_index=True)
 
     if len(summary):
         c1, c2 = st.columns(2)
