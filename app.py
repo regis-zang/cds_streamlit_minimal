@@ -13,21 +13,20 @@ st.set_page_config(page_title="CDs - Mapa e Sugestões", layout="wide")
 
 @st.cache_data(show_spinner=False)
 def load_data() -> pd.DataFrame:
-    # Ajuste o caminho caso seu arquivo esteja em outro lugar
     parquet_path = Path("DataBase/points_enriched_final.parquet")
     df = pd.read_parquet(parquet_path)
-    # Normalização suave de nomes (não obrigatório)
+
+    # Normalização suave de nomes
     df = df.rename(columns={
         "lat": "latitude",
         "lon": "longitude",
-        "long": "longitude"
+        "long": "longitude",
     })
-    # clusters garantidos como int
     if "cluster" in df.columns:
         df["cluster"] = df["cluster"].astype(int)
     return df
 
-# Paleta fixa (cores distintas por cluster)
+# Paleta fixa
 PALETTE = {
     0: [231, 76, 60],    # vermelho
     1: [39, 174, 96],    # verde
@@ -35,10 +34,9 @@ PALETTE = {
     3: [155, 89, 182],   # roxo
     4: [241, 196, 15],   # amarelo
 }
-FALLBACK = [60, 60, 60]  # fallback
+FALLBACK = [60, 60, 60]
 
 def colorize(df: pd.DataFrame, alpha=180) -> pd.DataFrame:
-    """Adiciona coluna 'rgba' com a cor do cluster."""
     if "cluster" not in df.columns:
         df = df.copy()
         df["cluster"] = -1
@@ -52,7 +50,6 @@ def colorize(df: pd.DataFrame, alpha=180) -> pd.DataFrame:
 # Distância haversine
 # -----------------------------
 def haversine_km(lat1, lon1, lat2, lon2):
-    """Distância haversine (km) - aceita Series/arrays."""
     R = 6371.0
     lat1 = np.radians(lat1)
     lon1 = np.radians(lon1)
@@ -65,15 +62,23 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return R * c
 
 # -----------------------------
-# Resumo por cluster
+# Resumo por cluster (robusto)
 # -----------------------------
+def _pick_col(cols, *names):
+    """retorna o primeiro nome existente em cols."""
+    for n in names:
+        if n in cols:
+            return n
+    return None
+
 def compute_cluster_summary(df_map: pd.DataFrame) -> pd.DataFrame:
-    """Retorna centroides, raio p90 e contagem por cluster."""
+    """Centroides, raio p90 e contagem por cluster (robusto a colisão de nomes)."""
     if df_map.empty:
         return pd.DataFrame(
             columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]
         )
 
+    # base com centroides e contagem
     base = (
         df_map
         .groupby("cluster", as_index=False)
@@ -82,12 +87,23 @@ def compute_cluster_summary(df_map: pd.DataFrame) -> pd.DataFrame:
              n_points=("cluster", "size"))
     )
 
-    # distância de cada ponto ao centroide do seu cluster
-    tmp = df_map.merge(base, on="cluster", how="left")
+    # merge com sufixo controlado (se houver colisão de nomes)
+    tmp = df_map.merge(base, on="cluster", how="left", suffixes=("", "_b"))
+
+    # escolhe os nomes corretos pós-merge
+    c_lat = _pick_col(tmp.columns, "centroid_lat", "centroid_lat_b", "centroid_lat_y", "centroid_lat_x")
+    c_lon = _pick_col(tmp.columns, "centroid_lon", "centroid_lon_b", "centroid_lon_y", "centroid_lon_x")
+    if c_lat is None or c_lon is None:
+        # algo muito atípico; devolve só contagem
+        out = base.rename(columns={"centroid_lat": "centroid_lat",
+                                   "centroid_lon": "centroid_lon"})
+        out["radius_km"] = np.nan
+        return out[["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]]
+
     tmp["dist_km"] = haversine_km(
-        tmp["latitude"], tmp["longitude"],
-        tmp["centroid_lat"], tmp["centroid_lon"]
+        tmp["latitude"], tmp["longitude"], tmp[c_lat], tmp[c_lon]
     )
+
     r90 = (
         tmp.groupby("cluster", as_index=False)["dist_km"]
         .quantile(0.90)
@@ -98,14 +114,9 @@ def compute_cluster_summary(df_map: pd.DataFrame) -> pd.DataFrame:
     return out[["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]]
 
 # -----------------------------
-# Sugestão de CDs (nova aba)
+# Sugestão de CDs
 # -----------------------------
 def build_cd_suggestions(df_map: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cria um DataFrame de sugestão de CDs (uma linha por cluster).
-    - Encontra o ponto mais próximo do centroide do cluster (para herdar cidade/UF/city_code).
-    - Usa colunas novas, prefixadas com 'sug_'.
-    """
     summary = compute_cluster_summary(df_map).copy()
     if summary.empty:
         return pd.DataFrame(
@@ -135,7 +146,6 @@ def build_cd_suggestions(df_map: pd.DataFrame) -> pd.DataFrame:
         uf        = best.get("uf", np.nan)
         city_code = best.get("city_code", np.nan)
 
-        # Regrinha simples: cluster "grande" => CD, "pequeno" => RDC
         tipo = "CD" if int(row["n_points"]) >= 120 else "RDC"
 
         if pd.notna(municipio) and pd.notna(uf):
@@ -171,16 +181,16 @@ def build_cd_suggestions(df_map: pd.DataFrame) -> pd.DataFrame:
 def make_deck(df_map: pd.DataFrame,
               show_p90: bool = True,
               show_counts: bool = True) -> pdk.Deck:
-    """Cria o DeckGL com TileLayer + pontos coloridos + (opcional) círculos p90 e labels."""
     if df_map.empty:
-        # um estado padrão evita erro no pydeck
         view = pdk.ViewState(latitude=-22.9, longitude=-47.0, zoom=5.5)
     else:
-        lat_c = float(df_map["latitude"].mean())
-        lon_c = float(df_map["longitude"].mean())
-        view = pdk.ViewState(latitude=lat_c, longitude=lon_c, zoom=6.2)
+        view = pdk.ViewState(
+            latitude=float(df_map["latitude"].mean()),
+            longitude=float(df_map["longitude"].mean()),
+            zoom=6.2
+        )
 
-    # 1) camada base (TileLayer) — mantém o mapa visível (sem overlay azul)
+    # 1) base
     base_layer = pdk.Layer(
         "TileLayer",
         data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
@@ -190,14 +200,14 @@ def make_deck(df_map: pd.DataFrame,
         opacity=1.0,
     )
 
-    # 2) pontos coloridos por cluster
+    # 2) pontos coloridos
     pts = pdk.Layer(
         "ScatterplotLayer",
         df_map,
         pickable=True,
         get_position="[longitude, latitude]",
         get_fill_color="rgba",
-        get_radius=70,        # em metros
+        get_radius=70,
         radius_min_pixels=2,
         radius_max_pixels=8,
         stroked=False,
@@ -205,7 +215,7 @@ def make_deck(df_map: pd.DataFrame,
 
     layers = [base_layer, pts]
 
-    # 3) círculos p90 (apenas o contorno)
+    # 3) círculos p90
     if show_p90:
         summary = compute_cluster_summary(df_map)
         if not summary.empty:
@@ -242,7 +252,7 @@ def make_deck(df_map: pd.DataFrame,
     return pdk.Deck(
         layers=layers,
         initial_view_state=view,
-        map_style=None,       # MUITO IMPORTANTE: evita overlay de estilo no fundo
+        map_style=None,  # evita overlay azul
         tooltip={
             "html": "<b>Cluster:</b> {cluster}<br>"
                     "<b>Lat:</b> {latitude}<br>"
@@ -256,49 +266,39 @@ def make_deck(df_map: pd.DataFrame,
 # -----------------------------
 df = load_data()
 
-# Lateral: filtros
 st.sidebar.header("Filtros")
 all_clusters = sorted(df["cluster"].dropna().unique().astype(int).tolist())
 selected = st.sidebar.multiselect(
     "Clusters",
     options=all_clusters,
     default=all_clusters,
-    format_func=lambda x: str(x)
+    format_func=lambda x: str(x),
 )
-
 show_legend = st.sidebar.checkbox("Mostrar legenda de cores", value=True)
 show_p90     = st.sidebar.checkbox("Mostrar círculos p90 por CD", value=True)
 show_counts  = st.sidebar.checkbox("Mostrar contagem no centróide", value=True)
 
-# Aplica filtro
 df_map = df[df["cluster"].isin(selected)].copy()
 df_map = colorize(df_map, alpha=180)
 
-# Métricas de topo
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total de pontos (dados)", f"{len(df):,}".replace(",", "."))
 c2.metric("Pontos no mapa (amostra)", f"{len(df_map):,}".replace(",", "."))
-
 if not df_map.empty:
-    lat_min, lat_max = df_map["latitude"].min(), df_map["latitude"].max()
-    lon_min, lon_max = df_map["longitude"].min(), df_map["longitude"].max()
-    c3.metric("Lat range", f"{lat_min:.6f} ~ {lat_max:.6f}")
-    c4.metric("Lon range", f"{lon_min:.6f} ~ {lon_max:.6f}")
+    c3.metric("Lat range", f"{df_map['latitude'].min():.6f} ~ {df_map['latitude'].max():.6f}")
+    c4.metric("Lon range", f"{df_map['longitude'].min():.6f} ~ {df_map['longitude'].max():.6f}")
 else:
     c3.metric("Lat range", "–")
     c4.metric("Lon range", "–")
 
-# Abas
 tab_map, tab_charts, tab_sug = st.tabs(["🗺️ Mapa", "📊 CDs & Raios", "💡 Sugestão de CDs"])
 
-# ------------------ Mapa ------------------
+# ----- Mapa
 with tab_map:
     st.subheader("Mapa por cluster")
-
     deck = make_deck(df_map, show_p90=show_p90, show_counts=show_counts)
     st.pydeck_chart(deck, use_container_width=True)
 
-    # Legenda de cores (opcional)
     if show_legend:
         st.markdown("**Legenda (cluster → cor)**")
         cols = st.columns(min(6, len(PALETTE)))
@@ -315,24 +315,21 @@ with tab_map:
             """
             cols[i % len(cols)].markdown(html, unsafe_allow_html=True)
 
-# ------------------ Resumo CDs & Raios ------------------
+# ----- CDs & Raios
 with tab_charts:
     st.subheader("CDs & Raios (resumo por cluster)")
     summary = compute_cluster_summary(df_map)
     st.dataframe(summary, use_container_width=True, hide_index=True)
-
     csv = summary.to_csv(index=False).encode("utf-8-sig")
     st.download_button("Baixar resumo (CSV)", csv, file_name="resumo_cds_raios.csv", mime="text/csv")
 
-# ------------------ Sugestão de CDs ------------------
+# ----- Sugestão de CDs
 with tab_sug:
     st.subheader("Sugestão de CDs (uma linha por cluster)")
     df_sug = build_cd_suggestions(df_map)
     st.dataframe(df_sug, use_container_width=True, hide_index=True)
-
     csv2 = df_sug.to_csv(index=False).encode("utf-8-sig")
     st.download_button("Baixar sugestões (CSV)", csv2, file_name="sugestao_cds.csv", mime="text/csv")
-
     if not df_sug.empty:
         st.caption(
             f"{len(df_sug)} clusters sugeridos • "
