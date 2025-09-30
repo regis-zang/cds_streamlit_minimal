@@ -62,52 +62,54 @@ def haversine_km(lat1, lon1, lat2, lon2):
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     Retorna: cluster, centroid_lat, centroid_lon, radius_km (p90) e n_points.
-    Garante colunas 'centroid_lat' e 'centroid_lon' (rename após groupby).
+    Robusto a datasets que já possuam colunas 'centroid_lat'/'centroid_lon'
+    (evita conflitos usando nomes temporários c_lat/c_lon).
     """
     if df.empty:
         return pd.DataFrame(
             columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]
         )
 
-    # centróides por média
+    # 1) Centrós por média, com nomes temporários para evitar conflitos
     cent = (
         df.groupby("cluster")[["latitude", "longitude"]]
         .mean()
         .reset_index()
-        .rename(columns={"latitude": "centroid_lat", "longitude": "centroid_lon"})
+        .rename(columns={"latitude": "c_lat", "longitude": "c_lon"})
     )
 
-    # junta para calcular distância ao centróide
-    base = df.merge(cent, on="cluster", how="left")
+    # 2) Junta os centróides de forma many-to-one, sem colisão de nomes
+    base = df.merge(cent, on="cluster", how="left", validate="many_to_one")
 
-    # distância em km de cada ponto ao centróide do seu cluster
+    # 3) Distância de cada ponto ao centróide do seu cluster
     base["dist_km"] = haversine_km(
-        base["latitude"], base["longitude"], base["centroid_lat"], base["centroid_lon"]
+        base["latitude"], base["longitude"], base["c_lat"], base["c_lon"]
     )
 
-    # p90 da distância por cluster
+    # 4) p90 da distância por cluster
     r90 = (
         base.groupby("cluster", as_index=False)["dist_km"]
         .quantile(0.90)
         .rename(columns={"dist_km": "radius_km"})
     )
 
-    # contagem por cluster
+    # 5) Contagem de pontos por cluster
     npts = (
         df.groupby("cluster", as_index=False)
         .size()
         .rename(columns={"size": "n_points"})
     )
 
-    # consolida
+    # 6) Consolida e renomeia c_lat/c_lon para os nomes finais
     summary = (
         cent.merge(r90, on="cluster", how="left")
-        .merge(npts, on="cluster", how="left")
-        .sort_values("cluster")
-        .reset_index(drop=True)
+            .merge(npts, on="cluster", how="left")
+            .rename(columns={"c_lat": "centroid_lat", "c_lon": "centroid_lon"})
+            .sort_values("cluster")
+            .reset_index(drop=True)
     )
 
-    # segurança contra NaN
+    # Segurança
     for c in ["radius_km", "n_points"]:
         if c in summary:
             summary[c] = summary[c].fillna(0)
