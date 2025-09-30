@@ -1,7 +1,6 @@
 # app.py
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Dict, List
 
@@ -19,7 +18,7 @@ st.set_page_config(page_title="Pontos por cluster (cores distintas)", layout="wi
 DATA_DIR = Path("DataBase")
 POINTS_FILE = DATA_DIR / "points_enriched_final.parquet"
 
-# Carto Light (padrão) — estável e rápido
+# Carto Light (padrão)
 CARTO_LIGHT = "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
 
 # Paleta fixa por cluster (RGBA)
@@ -39,29 +38,16 @@ FALLBACK_COLOR = [0, 0, 0, 190]
 @st.cache_data(show_spinner=False)
 def load_points(path: Path) -> pd.DataFrame:
     df = pd.read_parquet(path)
-    # Normaliza nomes essenciais (se vierem com variações)
-    df = df.rename(
-        columns={
-            "lat": "latitude",
-            "lon": "longitude",
-            "lng": "longitude",
-        }
-    )
-    # Garante colunas presentes
+    df = df.rename(columns={"lat": "latitude", "lon": "longitude", "lng": "longitude"})
     required = {"latitude", "longitude", "cluster"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Faltam colunas no arquivo: {missing}")
-
-    # Tipos
-    df["cluster"] = df["cluster"].astype(int)
-    df["latitude"] = df["latitude"].astype(float)
-    df["longitude"] = df["longitude"].astype(float)
+    # tipos básicos (não forço aqui para não perder dados; força no resumo)
     return df
 
 
 def colorize(df: pd.DataFrame) -> pd.DataFrame:
-    """Adiciona coluna 'rgba' a partir do cluster."""
     out = df.copy()
     out["rgba"] = out["cluster"].map(PALETTE).apply(
         lambda c: c if isinstance(c, list) else FALLBACK_COLOR
@@ -70,7 +56,6 @@ def colorize(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def haversine_array(lat1, lon1, lat2, lon2) -> np.ndarray:
-    """Distância Haversine (km) array-wise."""
     R = 6371.0
     lat1 = np.radians(lat1)
     lon1 = np.radians(lon1)
@@ -90,42 +75,69 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
     Retorna um DF com:
       cluster, centroid_lat, centroid_lon, radius_km (p90), n_points
+    — Robusta a tipos errados e dados faltantes.
     """
     if df.empty:
         return pd.DataFrame(
             columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]
         )
 
-    # centroides
-    centroids = (
-        df.groupby("cluster")[["latitude", "longitude"]]
-        .mean()
-        .rename(columns={"latitude": "centroid_lat", "longitude": "centroid_lon"})
-        .reset_index()
-    )
+    # Mantém somente colunas necessárias e força tipos
+    base = df.loc[:, ["cluster", "latitude", "longitude"]].copy()
 
-    base = df.merge(centroids, on="cluster", how="left")
+    base["cluster"] = pd.to_numeric(base["cluster"], errors="coerce")
+    base["latitude"] = pd.to_numeric(base["latitude"], errors="coerce")
+    base["longitude"] = pd.to_numeric(base["longitude"], errors="coerce")
 
-    dist_km = haversine_array(
-        base["latitude"].values,
-        base["longitude"].values,
-        base["centroid_lat"].values,
-        base["centroid_lon"].values,
-    )
-    base = base.assign(dist_km=dist_km)
+    base = base.dropna(subset=["cluster", "latitude", "longitude"])
+    if base.empty:
+        return pd.DataFrame(
+            columns=["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]
+        )
 
-    r90 = base.groupby("cluster")["dist_km"].quantile(0.90).reset_index()
-    r90 = r90.rename(columns={"dist_km": "radius_km"})
+    # Garante inteiros no cluster (após remover NaN)
+    base["cluster"] = base["cluster"].astype(int)
 
-    counts = df.groupby("cluster").size().reset_index(name="n_points")
-
-    summary = (
-        centroids.merge(r90, on="cluster", how="left")
-        .merge(counts, on="cluster", how="left")
+    # Centróides + contagem usando agg nomeado (evita rename)
+    cents = (
+        base.groupby("cluster", as_index=False)
+        .agg(
+            centroid_lat=("latitude", "mean"),
+            centroid_lon=("longitude", "mean"),
+            n_points=("cluster", "size"),
+        )
         .sort_values("cluster")
         .reset_index(drop=True)
     )
-    return summary
+
+    # Junta de volta para medir distâncias
+    joined = base.merge(
+        cents[["cluster", "centroid_lat", "centroid_lon"]],
+        on="cluster",
+        how="left",
+        validate="many_to_one",
+    )
+
+    # Distâncias haversine
+    dist = haversine_array(
+        joined["latitude"].values,
+        joined["longitude"].values,
+        joined["centroid_lat"].values,
+        joined["centroid_lon"].values,
+    )
+    joined = joined.assign(dist_km=dist)
+
+    # Raio p90
+    r90 = (
+        joined.groupby("cluster", as_index=False)["dist_km"]
+        .quantile(0.90)
+        .rename(columns={"dist_km": "radius_km"})
+    )
+
+    summary = cents.merge(r90, on="cluster", how="left")
+    summary["radius_km"] = pd.to_numeric(summary["radius_km"], errors="coerce").fillna(0.0)
+
+    return summary[["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]]
 
 
 def make_deck(
@@ -133,8 +145,8 @@ def make_deck(
     show_p90: bool,
     show_counts: bool,
 ) -> pdk.Deck:
-    """Cria o objeto Deck com basemap + pontos + (opcional) círculos e labels."""
-    # Basemap
+    """Cria o Deck com basemap + pontos + (opcional) círculos p90 e labels."""
+    # Basemap primeiro (fica no fundo)
     base_layer = pdk.Layer(
         "TileLayer",
         data=CARTO_LIGHT,
@@ -156,15 +168,14 @@ def make_deck(
         stroked=False,
         filled=True,
         radius_units="pixels",
-        get_radius=6,  # tamanho do marcador em pixels
+        get_radius=6,
     )
     layers.append(pts_layer)
 
-    # Resumo para círculos/labels
+    # Resumo (robusto) para círculos e labels
     summary = compute_cluster_summary(df_map)
 
     if show_p90 and not summary.empty:
-        # Círculos p90 (em metros)
         circ = summary.assign(radius_m=(summary["radius_km"] * 1000.0).clip(lower=0))
         circ_layer = pdk.Layer(
             "ScatterplotLayer",
@@ -182,7 +193,6 @@ def make_deck(
         layers.append(circ_layer)
 
     if show_counts and not summary.empty:
-        # Labels com a contagem por centróide
         labels = summary.rename(
             columns={"centroid_lat": "lat", "centroid_lon": "lon", "n_points": "text"}
         )[["lat", "lon", "text"]]
@@ -229,22 +239,22 @@ except Exception as e:
 
 # Sidebar — filtros / opções
 st.sidebar.header("Filtros")
-clusters = sorted(df["cluster"].unique().tolist())
+clusters = sorted(pd.to_numeric(df["cluster"], errors="coerce").dropna().astype(int).unique().tolist())
 sel_clusters = st.sidebar.multiselect("Clusters", clusters, default=clusters)
 show_legend = st.sidebar.checkbox("Mostrar legenda de cores", value=True)
 show_p90 = st.sidebar.checkbox("Mostrar círculos p90 por CD", value=True)
 show_counts = st.sidebar.checkbox("Mostrar contagem no centróide", value=True)
 
-# Amostra/filtragem
+# Filtragem + cores
 df_map = df[df["cluster"].isin(sel_clusters)].copy()
-df_map = colorize(df_map)  # adiciona 'rgba'
+df_map = colorize(df_map)
 
 # Cabeçalho de métricas
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Total de pontos (dados)", f"{len(df):,}".replace(",", "."))
 c2.metric("Pontos no mapa (amostra)", f"{len(df_map):,}".replace(",", "."))
-lat_min, lat_max = df["latitude"].min(), df["latitude"].max()
-lon_min, lon_max = df["longitude"].min(), df["longitude"].max()
+lat_min, lat_max = pd.to_numeric(df["latitude"], errors="coerce").min(), pd.to_numeric(df["latitude"], errors="coerce").max()
+lon_min, lon_max = pd.to_numeric(df["longitude"], errors="coerce").min(), pd.to_numeric(df["longitude"], errors="coerce").max()
 c3.metric("Lat range", f"{lat_min:.5f} ~ {lat_max:.5f}")
 c4.metric("Lon range", f"{lon_min:.5f} ~ {lon_max:.5f}")
 
@@ -253,14 +263,12 @@ tab_map, tab_charts = st.tabs(["🗺️ Mapa", "📊 CDs & Raios"])
 
 with tab_map:
     st.subheader("Mapa por cluster")
-
     if df_map.empty:
         st.info("Nenhum ponto para os filtros selecionados.")
     else:
         deck = make_deck(df_map, show_p90=show_p90, show_counts=show_counts)
         st.pydeck_chart(deck, use_container_width=True)
 
-        # legenda simples
         if show_legend:
             st.markdown("**Legenda (cluster → cor)**")
             cols = st.columns(len(PALETTE))
@@ -276,12 +284,10 @@ with tab_map:
 
 with tab_charts:
     st.subheader("CDs & Raios (resumo por cluster)")
-
     summary = compute_cluster_summary(df_map)
     st.dataframe(summary, use_container_width=True)
 
     if not summary.empty:
-        # Botão para CSV
         csv = summary.to_csv(index=False).encode("utf-8")
         st.download_button("Baixar resumo (CSV)", data=csv, file_name="cds_raios.csv")
 
