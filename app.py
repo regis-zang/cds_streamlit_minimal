@@ -116,93 +116,63 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     return summary
 
-def make_deck(df_map: pd.DataFrame, show_p90: bool, show_counts: bool) -> pdk.Deck:
-    """
-    Monta a visualização (TileLayer + ScatterplotLayer + opcional CircleLayer e TextLayer).
-    """
+import pydeck as pdk
+
+def make_deck(df_map, show_p90=False, show_counts=False, zoom=6):
     if df_map.empty:
-        # view default no sudeste
-        view_state = pdk.ViewState(latitude=-22.5, longitude=-47, zoom=6)
-        return pdk.Deck(layers=[], initial_view_state=view_state, map_provider=None)
-
-    df_map = df_map.copy()
-    df_map["rgba"] = df_map["cluster"].map(PALETTE)
-
-    # View inicial
-    lat_c = df_map["latitude"].mean()
-    lon_c = df_map["longitude"].mean()
-    view_state = pdk.ViewState(latitude=float(lat_c), longitude=float(lon_c), zoom=6)
+        view_state = pdk.ViewState(latitude=-23.5, longitude=-46.6, zoom=5)
+    else:
+        view_state = pdk.ViewState(
+            latitude=float(df_map["latitude"].mean()),
+            longitude=float(df_map["longitude"].mean()),
+            zoom=zoom,
+        )
 
     layers = []
 
-    # Base map (Carto Light)
+    # 1) BASEMAP (fica SEMPRE como primeira layer)
     base_layer = pdk.Layer(
         "TileLayer",
+        # escolha um dos dois:
         data="https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
-        min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
+        # data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        min_zoom=0,
+        max_zoom=19,
+        tile_size=256,
+        opacity=1.0,
+        pickable=False,
     )
     layers.append(base_layer)
 
-    # Pontos
-    pts_layer = pdk.Layer(
+    # 2) PONTOS
+    points = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
-        get_position=["longitude", "latitude"],
-        get_fill_color="rgba",
-        get_radius=60,
-        pickable=True,
-        radius_min_pixels=2,
+        get_position='[longitude, latitude]',
+        get_fill_color='rgba',           # já vem calculado no dataframe
+        get_radius=80,                   # ajuste se quiser em metros
+        radius_min_pixels=4,
         radius_max_pixels=12,
-        stroked=True,
-        get_line_color=[240, 240, 240],
-        line_width_min_pixels=0.5,
+        stroked=False,
+        pickable=True,
     )
-    layers.append(pts_layer)
+    layers.append(points)
 
-    # Resumo para p90 / contagens
-    summary = compute_cluster_summary(df_map)
+    # 3) (Opcional) círculos p90 e contagens no centróide…
+    # acrescente aqui as suas layers de círculos/labels, se já tinha
 
-    # Círculos p90
-    if show_p90 and not summary.empty:
-        # CircleLayer usa metros
-        summary["_radius_m"] = summary["radius_km"] * 1000.0
-        rings = pdk.Layer(
-            "CircleLayer",
-            data=summary,
-            get_position=["centroid_lon", "centroid_lat"],
-            get_radius="_radius_m",
-            get_fill_color=[33, 150, 243, 40],
-            get_line_color=[33, 150, 243, 180],
-            line_width_min_pixels=1.5,
-            stroked=True,
-            pickable=False,
-        )
-        layers.append(rings)
-
-    # Contagem no centróide
-    if show_counts and not summary.empty:
-        summary["_label"] = summary["n_points"].astype(int).astype(str)
-        txt = pdk.Layer(
-            "TextLayer",
-            data=summary,
-            get_position=["centroid_lon", "centroid_lat"],
-            get_text="_label",
-            get_color=[20, 20, 20],
-            get_size=16,
-            size_units="meters",
-            size_scale=20,
-            size_min_pixels=10,
-            get_alignment_baseline="'center'",
-        )
-        layers.append(txt)
+    tooltip = {"text": "cluster: {cluster}\nlat: {latitude}\nlon: {longitude}"}
 
     deck = pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
+        tooltip=tooltip,
+        # MUITO IMPORTANTE: desabilita basemap padrão (Mapbox)
+        map_style=None,
         map_provider=None,
-        tooltip={"text": "Cluster {cluster}\nlat {latitude}\nlon {longitude}"},
     )
     return deck
+
 
 # ------------------------------------------------------
 # UI – Sidebar (filtros)
