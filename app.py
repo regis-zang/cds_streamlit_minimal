@@ -141,22 +141,19 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def make_deck(df_map: pd.DataFrame, show_p90: bool, show_counts: bool) -> pdk.Deck:
-    # ---- Basemap por TileLayer (fica por baixo) ----
+    # --- Basemap (TileLayer) ---
     base_layer = pdk.Layer(
         "TileLayer",
         data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-        min_zoom=0,
-        max_zoom=19,
-        tile_size=256,
-        opacity=1.0,
+        min_zoom=0, max_zoom=19, tile_size=256, opacity=1.0,
     )
 
-    # ---- Pontos (cores do df via coluna 'rgba') ----
+    # --- Pontos (cores do df via coluna 'rgba') ---
     pts_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
         get_position="[longitude, latitude]",
-        get_fill_color="rgba",         # já vem pronta no df
+        get_fill_color="rgba",
         pickable=False,
         stroked=False,
         filled=True,
@@ -166,25 +163,30 @@ def make_deck(df_map: pd.DataFrame, show_p90: bool, show_counts: bool) -> pdk.De
 
     layers = [base_layer, pts_layer]
 
-    # ---- Círculos p90 e rótulos (opcionais) ----
+    # --- Resumo por cluster (para círculos e contagens) ---
     summary = compute_cluster_summary(df_map)
 
+    # ====== AQUI está a mudança ======
     if show_p90 and not summary.empty:
         circ = summary.assign(radius_m=(summary["radius_km"] * 1000.0).clip(lower=0))
+
+        # desenha apenas o contorno (sem preencher) para não “tingir” o mapa
         rings = pdk.Layer(
             "ScatterplotLayer",
             data=circ,
             get_position="[centroid_lon, centroid_lat]",
-            get_fill_color="[0, 149, 255, 36]",
-            get_line_color="[0, 149, 255, 200]",
-            filled=True,
-            stroked=True,
             get_radius="radius_m",
             radius_units="meters",
+            stroked=True,
+            filled=False,                      # <<< SEM preenchimento
+            get_line_color=[0, 149, 255, 180], # contorno azul
             line_width_min_pixels=2,
             pickable=False,
         )
         layers.append(rings)
+
+        # Se preferir manter preenchimento, troque por:
+        # filled=True, get_fill_color=[0,149,255,10]  # opacidade bem baixa
 
     if show_counts and not summary.empty:
         labels = summary.rename(
@@ -206,22 +208,13 @@ def make_deck(df_map: pd.DataFrame, show_p90: bool, show_counts: bool) -> pdk.De
     lat_center = float(df_map["latitude"].mean()) if not df_map.empty else -23.5
     lon_center = float(df_map["longitude"].mean()) if not df_map.empty else -46.6
     view_state = pdk.ViewState(
-        latitude=lat_center,
-        longitude=lon_center,
-        zoom=7,
-        min_zoom=3,
-        max_zoom=18,
-        bearing=0,
-        pitch=0,
+        latitude=lat_center, longitude=lon_center,
+        zoom=7, min_zoom=3, max_zoom=18, bearing=0, pitch=0
     )
 
-    # >>> REMOÇÃO dos kwargs que causavam TypeError (controller / map_provider)
-    # use map_style=None para não acionar Mapbox
-    return pdk.Deck(
-        layers=layers,
-        initial_view_state=view_state,
-        map_style=None,     # sem Mapbox (TileLayer renderiza o fundo)
-    )
+    # map_style=None evita Mapbox e usa apenas o TileLayer
+    return pdk.Deck(layers=layers, initial_view_state=view_state, map_style=None)
+
 
 # =======================
 # UI
