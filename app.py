@@ -145,39 +145,38 @@ def make_deck(
     show_p90: bool,
     show_counts: bool,
 ) -> pdk.Deck:
-    """Cria o Deck com basemap + pontos + (opcional) círculos p90 e labels."""
-    # Basemap primeiro (fica no fundo)
+    # ---- Basemap (fica por baixo) ----
     base_layer = pdk.Layer(
         "TileLayer",
-        data=CARTO_LIGHT,
+        # passar como dict é mais robusto no pydeck
+        data={"url": CARTO_LIGHT},          # "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
         min_zoom=0,
         max_zoom=19,
         tile_size=256,
         opacity=1.0,
     )
 
-    layers = [base_layer]
-
-    # Pontos
+    # ---- Pontos (mantém as cores atuais) ----
     pts_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
         get_position="[longitude, latitude]",
-        get_fill_color="rgba",
+        get_fill_color="rgba",              # cores já calculadas no df_map
         pickable=False,
         stroked=False,
         filled=True,
         radius_units="pixels",
         get_radius=6,
     )
-    layers.append(pts_layer)
 
-    # Resumo (robusto) para círculos e labels
+    # ---- Círculos p90 e labels (opcionais) ----
+    layers = [base_layer, pts_layer]
+
     summary = compute_cluster_summary(df_map)
 
     if show_p90 and not summary.empty:
         circ = summary.assign(radius_m=(summary["radius_km"] * 1000.0).clip(lower=0))
-        circ_layer = pdk.Layer(
+        rings = pdk.Layer(
             "ScatterplotLayer",
             data=circ,
             get_position="[centroid_lon, centroid_lat]",
@@ -190,7 +189,7 @@ def make_deck(
             line_width_min_pixels=2,
             pickable=False,
         )
-        layers.append(circ_layer)
+        layers.append(rings)
 
     if show_counts and not summary.empty:
         labels = summary.rename(
@@ -208,7 +207,7 @@ def make_deck(
         )
         layers.append(text_layer)
 
-    # Enquadra a visão
+    # Enquadramento
     lat_center = float(df_map["latitude"].mean()) if not df_map.empty else -23.5
     lon_center = float(df_map["longitude"].mean()) if not df_map.empty else -46.6
 
@@ -222,8 +221,14 @@ def make_deck(
         pitch=0,
     )
 
-    return pdk.Deck(layers=layers, initial_view_state=view_state, map_provider=None)
-
+    # IMPORTANTE: desligar Mapbox para o TileLayer pintar o fundo
+    return pdk.Deck(
+        layers=layers,
+        initial_view_state=view_state,
+        map_provider=None,   # não usar mapbox
+        map_style=None,      # garante que não tenta carregar estilo do mapbox
+        controller=True,
+    )
 
 # =======================
 # UI
