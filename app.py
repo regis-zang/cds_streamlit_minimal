@@ -62,26 +62,31 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Retorna um df com:
-      cluster, centroid_lat, centroid_lon, radius_km (p90), n_points
+    Retorna:
+      cluster, centroid_lat, centroid_lon, radius_km, n_points, radius_m
     """
-    # centróides por mediana (mais robusto)
+    # centróides por mediana com nomes já corretos
     cent = (
-        df.groupby("cluster")[["latitude", "longitude"]]
-        .median()
-        .rename(columns={"latitude": "centroid_lat", "longitude": "centroid_lon"})
-        .reset_index()
+        df.groupby("cluster", as_index=False)
+          .agg(centroid_lat=("latitude", "median"),
+               centroid_lon=("longitude", "median"))
     )
 
+    # junta centróides ao base e calcula distâncias Haversine
     base = df.merge(cent, on="cluster", how="left")
     base["dist_km"] = haversine_km(
-        base["latitude"], base["longitude"], base["centroid_lat"], base["centroid_lon"]
+        base["latitude"], base["longitude"],
+        base["centroid_lat"], base["centroid_lon"]
     )
 
-    r90 = base.groupby("cluster")["dist_km"].quantile(0.90).reset_index(name="radius_km")
-    cnt = base.groupby("cluster").size().reset_index(name="n_points")
+    # p90 por cluster + contagem
+    r90 = base.groupby("cluster", as_index=False)["dist_km"].quantile(0.90)
+    r90 = r90.rename(columns={"dist_km": "radius_km"})
+    cnt = base.groupby("cluster", as_index=False).size().rename(columns={"size": "n_points"})
 
-    summary = cent.merge(r90, on="cluster").merge(cnt, on="cluster")
+    summary = (cent
+               .merge(r90, on="cluster")
+               .merge(cnt, on="cluster"))
     summary["radius_m"] = (summary["radius_km"] * 1000.0).astype(float)
     return summary
 
