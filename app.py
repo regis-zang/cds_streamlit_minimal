@@ -140,28 +140,23 @@ def compute_cluster_summary(df: pd.DataFrame) -> pd.DataFrame:
     return summary[["cluster", "centroid_lat", "centroid_lon", "radius_km", "n_points"]]
 
 
-def make_deck(
-    df_map: pd.DataFrame,
-    show_p90: bool,
-    show_counts: bool,
-) -> pdk.Deck:
-    # ---- Basemap (fica por baixo) ----
+def make_deck(df_map: pd.DataFrame, show_p90: bool, show_counts: bool) -> pdk.Deck:
+    # ---- Basemap por TileLayer (fica por baixo) ----
     base_layer = pdk.Layer(
         "TileLayer",
-        # passar como dict é mais robusto no pydeck
-        data={"url": CARTO_LIGHT},          # "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
+        data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         min_zoom=0,
         max_zoom=19,
         tile_size=256,
         opacity=1.0,
     )
 
-    # ---- Pontos (mantém as cores atuais) ----
+    # ---- Pontos (cores do df via coluna 'rgba') ----
     pts_layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_map,
         get_position="[longitude, latitude]",
-        get_fill_color="rgba",              # cores já calculadas no df_map
+        get_fill_color="rgba",         # já vem pronta no df
         pickable=False,
         stroked=False,
         filled=True,
@@ -169,9 +164,9 @@ def make_deck(
         get_radius=6,
     )
 
-    # ---- Círculos p90 e labels (opcionais) ----
     layers = [base_layer, pts_layer]
 
+    # ---- Círculos p90 e rótulos (opcionais) ----
     summary = compute_cluster_summary(df_map)
 
     if show_p90 and not summary.empty:
@@ -207,10 +202,9 @@ def make_deck(
         )
         layers.append(text_layer)
 
-    # Enquadramento
+    # Enquadramento inicial
     lat_center = float(df_map["latitude"].mean()) if not df_map.empty else -23.5
     lon_center = float(df_map["longitude"].mean()) if not df_map.empty else -46.6
-
     view_state = pdk.ViewState(
         latitude=lat_center,
         longitude=lon_center,
@@ -221,13 +215,12 @@ def make_deck(
         pitch=0,
     )
 
-    # IMPORTANTE: desligar Mapbox para o TileLayer pintar o fundo
+    # >>> REMOÇÃO dos kwargs que causavam TypeError (controller / map_provider)
+    # use map_style=None para não acionar Mapbox
     return pdk.Deck(
         layers=layers,
         initial_view_state=view_state,
-        map_provider=None,   # não usar mapbox
-        map_style=None,      # garante que não tenta carregar estilo do mapbox
-        controller=True,
+        map_style=None,     # sem Mapbox (TileLayer renderiza o fundo)
     )
 
 # =======================
