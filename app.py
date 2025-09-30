@@ -19,7 +19,7 @@ DATA_DIR = Path("DataBase")
 POINTS_FILE = DATA_DIR / "points_enriched_final.parquet"
 
 # Carto Light (padrão)
-CARTO_LIGHT = "https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png"
+CARTO_LIGHT = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
 
 # Paleta fixa por cluster (RGBA)
 PALETTE: Dict[int, List[int]] = {
